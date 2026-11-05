@@ -12,7 +12,7 @@ type Priority int8
 
 const (
 	PriorityHigh Priority = iota
-	PriorityMedium
+	PriorityNormal
 	PriorityLow
 )
 
@@ -36,7 +36,7 @@ const (
 
 type Result struct {
 	Kind   Kind
-	After  *time.Duration
+	After  time.Duration
 	Reason string
 }
 
@@ -45,7 +45,7 @@ func Ack() Result {
 }
 
 func Retry(after time.Duration, reason string) Result {
-	return Result{Kind: KindRetry, After: &after, Reason: reason}
+	return Result{Kind: KindRetry, After: after, Reason: reason}
 }
 
 func Dead(reason string) Result {
@@ -57,7 +57,7 @@ type Producer interface {
 }
 
 type Consumer interface {
-	Run(ctx context.Context, h Handler) Result
+	Run(ctx context.Context, h Handler) error
 }
 
 type Handler func(ctx context.Context, msg Message) Result

@@ -1,0 +1,160 @@
+# Локальная инфраструктура Herald (только для разработки).
+# Значения берутся из файла .env рядом с этим файлом. Шаблон: .env.example
+#
+#   cp .env.example .env
+#   docker compose up -d                          # PostgreSQL + Kafka (создаёт топики)
+#   docker compose --profile rabbitmq up -d       # + RabbitMQ
+#   docker compose --profile tools up -d          # + Kafka UI
+#   docker compose --profile providers up -d      # + заглушки провайдеров (Mailpit, providersim)
+#
+# Kafka нужна всегда: в неё публикуются доменные события.
+# RabbitMQ нужна, если QUEUE_BACKEND=rabbitmq или INGRESS_BROKER=rabbitmq.
+# Заглушки провайдеров (профиль providers) нужны Worker'у для отправки:
+#   Mailpit      SMTP localhost:1025, интерфейс http://localhost:8025
+#   providersim  SMS и push по HTTP, интерфейс http://localhost:8090
+#
+# Адреса из контейнеров: postgres:5432, rabbitmq:5672, kafka:9092.
+# Адреса с хоста задаются портами из .env.
+
+name: herald
+
+services:
+  postgres:
+    image: postgres:${POSTGRES_VERSION:-17}-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER не задан в .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD не задан в .env}
+      POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB не задан в .env}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  rabbitmq:
+    profiles: [ "rabbitmq" ]
+    image: rabbitmq:${RABBITMQ_VERSION:-4}-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?RABBITMQ_USER не задан в .env}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD не задан в .env}
+    ports:
+      - "${RABBITMQ_AMQP_PORT:-5672}:5672"
+      - "${RABBITMQ_UI_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: [ "CMD", "rabbitmq-diagnostics", "-q", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  kafka:
+    image: apache/kafka:${KAFKA_VERSION:-3.9.0}
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: INTERNAL://:9092,EXTERNAL://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:${KAFKA_EXTERNAL_PORT:-29092}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    ports:
+      # Порт хоста должен совпадать с портом в KAFKA_ADVERTISED_LISTENERS (EXTERNAL),
+      # иначе клиент получит от брокера адрес, по которому не сможет подключиться.
+      - "${KAFKA_EXTERNAL_PORT:-29092}:29092"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: [ "CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1" ]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 15s
+
+  # Одноразовая задача: создаёт топики и завершается.
+  # Топики создаются явно (автосоздание выключено), чтобы число партиций было осознанным выбором.
+  kafka-init:
+    image: apache/kafka:${KAFKA_VERSION:-3.9.0}
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+    entrypoint: [ "/bin/bash", "-c" ]
+    command:
+      - |
+        set -e
+        create() {
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
+            --create --if-not-exists --topic "$$1" --partitions "$$2" --replication-factor 1
+        }
+        # Публичный контракт: исходящие события
+        create campaign.events 3
+        create notification.events 3
+        # Публичный контракт: входящие команды
+        create herald.commands 3
+        create herald.commands.dead 1
+        # Внутренняя очередь доставки (QUEUE_BACKEND=kafka)
+        create notifications.dispatch.high 3
+        create notifications.dispatch.normal 3
+        create notifications.dispatch.low 3
+        create notifications.retry.5s 3
+        create notifications.retry.30s 3
+        create notifications.retry.5m 3
+        create notifications.dead 1
+        echo "Топики созданы:"
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list
+
+  kafka-ui:
+    profiles: [ "tools" ]
+    image: provectuslabs/kafka-ui:${KAFKA_UI_VERSION:-v0.7.2}
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    ports:
+      - "${KAFKA_UI_PORT:-8080}:8080"
+
+  # Заглушка email: настоящий SMTP-сервер, письма видны в веб-интерфейсе.
+  mailpit:
+    profiles: [ "providers" ]
+    image: axllent/mailpit:${MAILPIT_VERSION:-latest}
+    ports:
+      - "${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+
+  # Заглушка SMS и push: самописный HTTP-сервер с интерфейсом на html/template + htmx.
+  providersim:
+    profiles: [ "providers" ]
+    build: ./providersim
+    image: herald/providersim:dev
+    environment:
+      PORT: 8090
+      MAILPIT_URL: http://localhost:${MAILPIT_UI_PORT:-8025}
+      SIM_LATENCY_MS: ${SIM_LATENCY_MS:-50}
+      SIM_FAIL_RATE: ${SIM_FAIL_RATE:-0}
+      SIM_THROTTLE_RATE: ${SIM_THROTTLE_RATE:-0}
+      SIM_HANG_RATE: ${SIM_HANG_RATE:-0}
+    ports:
+      - "${PROVIDERSIM_PORT:-8090}:8090"
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q -O /dev/null http://localhost:8090/healthz" ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  postgres-data:
+  rabbitmq-data:
+  kafka-data:

@@ -1,0 +1,52 @@
+{{define "page"}}<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Herald · Provider Simulator</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/htmx.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>Herald <span>· Provider Simulator</span></h1>
+  <span class="spacer"></span>
+  <a href="{{.Mailpit}}" target="_blank" rel="noopener">Email → Mailpit ↗</a>
+  <button hx-delete="/ui/messages" hx-swap="none"
+          title="Очистить сообщения и счётчики. Режим отказов не меняется">Очистить сообщения</button>
+</header>
+<main>
+  <div id="cards">
+  {{range .Channels}}
+    <section class="card" id="{{.Channel}}">
+      <h2>{{.Title}} <span class="endpoint">POST /{{.Channel}}/send</span></h2>
+
+      <div id="{{.Channel}}-live"
+           hx-get="/ui/{{.Channel}}/live"
+           hx-trigger="load, every 1500ms, refresh from:body"
+           hx-swap="innerHTML"></div>
+
+      <h3>Режим отказов</h3>
+      {{template "config" .Config}}
+
+      <h3>Тестовая отправка</h3>
+      <form class="fields" hx-post="/ui/{{.Channel}}/test" hx-target="#{{.Channel}}-result" hx-indicator="#{{.Channel}}-spin">
+        {{range .Fields}}<label>{{.Label}}<input name="{{.Name}}" value="{{.Value}}"></label>{{end}}
+        <label>Idempotency-Key<input name="key" placeholder="необязательно"></label>
+        <div class="row wide">
+          <button type="submit">Отправить</button>
+          <span class="htmx-indicator msg" id="{{.Channel}}-spin">отправка…</span>
+          <span id="{{.Channel}}-result"></span>
+        </div>
+      </form>
+    </section>
+  {{end}}
+  </div>
+  <p class="hint">
+    Получатель или токен со словом <code>invalid</code> всегда даёт постоянную ошибку (SMS: 422, push: 404).
+    Повторный <code>Idempotency-Key</code> возвращает <code>duplicate: true</code> и не добавляет сообщение.
+    Для скриптов есть JSON API: <code>GET /admin/state</code>, <code>PUT /admin/config/{sms|push}</code>.
+  </p>
+</main>
+</body>
+</html>{{end}}

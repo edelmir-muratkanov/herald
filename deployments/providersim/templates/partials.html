@@ -1,0 +1,59 @@
+{{/* Форма режима отказов. Целиком заменяется ответом сервера (outerHTML), поэтому после
+     нажатия пресета или «Применить» ползунки показывают актуальные значения. */}}
+{{define "config"}}
+<form class="config" id="{{.Channel}}-config" hx-post="/ui/{{.Channel}}/config" hx-swap="outerHTML">
+  <div class="presets">
+    {{range .Presets}}<button type="submit" name="preset" value="{{.Name}}">{{.Name}}</button>{{end}}
+  </div>
+  <div class="sliders">
+    <label>Задержка, мс
+      <div><input type="range" name="latency" min="0" max="5000" step="10" value="{{.Latency}}"
+                  oninput="this.nextElementSibling.textContent=this.value"><output>{{.Latency}}</output></div>
+    </label>
+    <label>Ошибка 500, %
+      <div><input type="range" name="fail" min="0" max="100" value="{{.Fail}}"
+                  oninput="this.nextElementSibling.textContent=this.value+'%'"><output>{{.Fail}}%</output></div>
+    </label>
+    <label>Лимит 429, %
+      <div><input type="range" name="throttle" min="0" max="100" value="{{.Throttle}}"
+                  oninput="this.nextElementSibling.textContent=this.value+'%'"><output>{{.Throttle}}%</output></div>
+    </label>
+    <label>Зависание, %
+      <div><input type="range" name="hang" min="0" max="100" value="{{.Hang}}"
+                  oninput="this.nextElementSibling.textContent=this.value+'%'"><output>{{.Hang}}%</output></div>
+    </label>
+  </div>
+  <div class="row">
+    <button type="submit" class="primary">Применить</button>
+    {{if .Message}}<span class="msg {{.MessageClass}}">{{.Message}}</span>{{end}}
+  </div>
+</form>
+{{end}}
+
+{{/* Счётчики и последние сообщения канала. Обновляется опросом каждые 1,5 с. */}}
+{{define "live"}}
+<div class="stats">
+  <div class="stat"><b>{{.Stats.Received}}</b><span>Получено</span></div>
+  <div class="stat ok"><b>{{.Stats.Accepted}}</b><span>Принято</span></div>
+  <div class="stat"><b>{{.Stats.Duplicates}}</b><span>Дубли</span></div>
+  <div class="stat bad"><b>{{.Stats.Rejected}}</b><span>Отклонено 4xx</span></div>
+  <div class="stat bad"><b>{{.Stats.Failed}}</b><span>Ошибки 5xx</span></div>
+  <div class="stat warn"><b>{{.Stats.Throttled}}</b><span>Лимит 429</span></div>
+  <div class="stat warn"><b>{{.Stats.Hung}}</b><span>Зависло</span></div>
+</div>
+<h3>Полученные сообщения</h3>
+<div class="table-wrap">
+  <table>
+    <thead><tr><th>Время</th><th>ID</th><th>Получатель</th><th>Текст</th><th>Ключ</th></tr></thead>
+    <tbody>
+    {{range .Messages}}
+      <tr><td>{{.Time}}</td><td>{{.ID}}</td><td>{{.Recipient}}</td><td>{{.Text}}</td><td>{{.Key}}</td></tr>
+    {{else}}
+      <tr><td colspan="5" class="empty">Пока ничего не получено</td></tr>
+    {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+
+{{define "result"}}<span class="msg {{.Class}}">{{.Text}}</span>{{end}}
